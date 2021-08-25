@@ -1,0 +1,44 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: gitlab
+spec:
+  template:
+    serviceAccountName: operate-workflow-sa
+  dependencies:
+    - name: test-dep
+      eventSourceName: gitlab-eventsource
+      eventName: gitlab-example
+  triggers:
+    - template:
+        name: gitlab-workflow-trigger
+        k8s:
+          group: argoproj.io
+          version: v1alpha1
+          resource: workflows
+          operation: create
+          source:
+            git:
+              filePath: "workflow/gitlab.yaml"
+          parameters:
+            - src:
+                dependencyName: test-dep
+                dataKey: body.project.git_http_url
+              dest: spec.arguments.parameters.0.value
+            - src:
+                dependencyName: test-dep
+                dataKey: body.ref
+              dest: spec.arguments.parameters.1.value
+            - src:
+                dependencyName: test-dep
+                dataTemplate: "{{ .Input.body.checkout_sha | substr 0 7 }}"
+              dest: spec.arguments.parameters.2.value
+      parameters:
+        - src:
+            dependencyName: test-dep
+            dataKey: body.project.git_http_url
+          dest: k8s.source.git.url
+        - src:
+            dependencyName: test-dep
+            dataKey: body.ref
+          dest: k8s.source.git.ref

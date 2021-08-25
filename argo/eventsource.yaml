@@ -1,0 +1,10 @@
+apiVersion: argoproj.io/v1alpha1
+kind: EventSource
+metadata:
+  name: gitlab-eventsource
+spec:
+  webhook:
+    gitlab-example:
+      port: "13000"
+      endpoint: /webhook
+      method: POST
