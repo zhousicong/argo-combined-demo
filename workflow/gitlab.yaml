@@ -1,0 +1,181 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: gitlab-workflow-
+spec:
+  entrypoint: argo-ci
+  arguments:
+    parameters:
+      - name: repo
+        value: http://172.16.20.150/devops/vue_todolist.git
+      - name: revision
+        value: main
+      - name: checkout_sha
+        value: 0000000
+      - name: context-path
+        value: .
+      - name: dockerfile
+        value: Dockerfile
+      - name: registry_url
+        value: 172.16.20.150:5000
+      - name: image_name
+        value: my-app-test
+  templates:
+    - name: argo-ci
+      steps:
+        - - name: checkout
+            template: checkout
+            arguments:
+              parameters:
+                - name: repo
+                  value: "{{workflow.parameters.repo}}"
+                - name: revision
+                  value: "{{workflow.parameters.revision}}"
+        - - name: build
+            template: build
+            arguments:
+              artifacts:
+                - name: source
+                  from: "{{steps.checkout.outputs.artifacts.source}}"
+              parameters:
+                - name: registry_url
+                  value: "{{workflow.parameters.registry_url}}"
+                - name: image_name
+                  value: "{{workflow.parameters.image_name}}"
+                - name: checkout_sha
+                  value: "{{workflow.parameters.checkout_sha}}"
+        - - name: build-image
+            template: build-image
+            arguments:
+              artifacts:
+                - name: source
+                  from: "{{steps.build.outputs.artifacts.source}}"
+              parameters:
+                - name: context-path
+                  value: "{{workflow.parameters.context-path}}"
+                - name: dockerfile
+                  value: "{{workflow.parameters.dockerfile}}"
+                - name: registry_url
+                  value: "{{workflow.parameters.registry_url}}"
+                - name: image_name
+                  value: "{{workflow.parameters.image_name}}"
+                - name: checkout_sha
+                  value: "{{workflow.parameters.checkout_sha}}"
+        - - name: script-step
+            template: script-step
+            arguments:
+              artifacts:
+                - name: source
+                  from: "{{steps.build.outputs.artifacts.source}}"
+              parameters:
+                - name: registry_url
+                  value: "{{workflow.parameters.registry_url}}"
+                - name: image_name
+                  value: "{{workflow.parameters.image_name}}"
+                - name: checkout_sha
+                  value: "{{workflow.parameters.checkout_sha}}"
+    - name: checkout
+      inputs:
+        parameters:
+          - name: repo
+          - name: revision
+        artifacts:
+          - name: source
+            path: /src
+            git:
+              repo: "{{inputs.parameters.repo}}"
+              revision: "{{inputs.parameters.revision}}"
+      outputs:
+        artifacts:
+          - name: source
+            path: /src
+      container:
+        image: my-ubuntu:v0.2
+        command: [sh, -c]
+        args: ["cd /src && git status && ls -l"]
+    - name: build
+      inputs:
+        artifacts:
+          - name: source
+            path: /src
+        parameters:
+          - name: registry_url
+          - name: image_name
+          - name: checkout_sha
+      outputs:
+        artifacts:
+          - name: source
+            path: /src
+      container:
+        image: my-ubuntu:v0.2
+        command: [sh, -c]
+        args: [
+            "
+            echo {{inputs.parameters.registry_url}}/{{inputs.parameters.image_name}}:{{inputs.parameters.checkout_sha}} && 
+            cd /src &&
+            npm install --registry https://registry.npm.taobao.org &&
+            npm run build
+            ",
+          ]
+    - name: build-image
+      inputs:
+        artifacts:
+          - name: source
+            path: /src
+        parameters:
+          - name: context-path
+          - name: dockerfile
+          - name: registry_url
+          - name: image_name
+          - name: checkout_sha
+      volumes:
+        - name: kaniko-secret
+          secret:
+            secretName: kaniko-secret
+      container:
+        image: gcr.io/kaniko-project/executor:v1.6.0
+        volumeMounts:
+          - name: kaniko-secret
+            mountPath: /kaniko/.docker/
+        workingDir: /src/{{inputs.parameters.context-path}}
+        args:
+          - --context=.
+          - --dockerfile={{inputs.parameters.dockerfile}}
+          - --destination={{inputs.parameters.registry_url}}/{{inputs.parameters.image_name}}:{{inputs.parameters.checkout_sha}}
+          - --skip-tls-verify
+          - --reproducible
+    - name: script-step
+      inputs:
+        parameters:
+          - name: registry_url
+          - name: image_name
+          - name: checkout_sha
+      script:
+        image: my-ubuntu:v0.2
+        env:
+          - name: GIT_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: git-user-pass2
+                key: username
+          - name: GIT_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: git-user-pass2
+                key: password
+        command: [bash]
+        source: |
+          echo {{inputs.parameters.checkout_sha}}
+          git config --global user.email "sicong.zhou@zilliz.com"
+          git config --global user.name root
+          pwd
+          git clone --branch main --depth 1 http://${GIT_USERNAME}:${GIT_PASSWORD}@172.16.20.150/devops/vue_todolist.git repo
+          cd repo/deploy
+          yq eval -i '.spec.template.spec.containers.[0].image = "{{inputs.parameters.registry_url}}/{{inputs.parameters.image_name}}:{{inputs.parameters.checkout_sha}}"' deployment.yaml
+          if [ -n "$(git status -s)" ]; then
+              git add .
+              git commit -m "submit by workflow4"
+              git push
+          else
+              echo "this repo is up to date, nothing chagned."
+          fi
